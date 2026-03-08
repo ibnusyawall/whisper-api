@@ -5,6 +5,10 @@
   
   **A RESTful WhatsApp messaging API built with Express.js and Baileys library for seamless WhatsApp integration.**
   
+  ⚡ *Think of it as a developer-friendly WhatsApp messaging gateway — similar to how Stripe provides APIs for payments.*
+ 
+  ![Last Commit](https://img.shields.io/github/last-commit/ibnusyawall/whisper-api)
+  ![Stars](https://img.shields.io/github/stars/ibnusyawall/whisper-api)
   [![Node.js](https://img.shields.io/badge/Node.js-v20+-green)](https://nodejs.org/en)
   [![Express.js](https://img.shields.io/badge/Express.js-v5.1+-blue)](https://expressjs.com/)
   [![Baileys](https://img.shields.io/badge/Baileys-v6.7+-purple)](https://github.com/WhiskeySockets/Baileys/)
@@ -23,6 +27,19 @@
 - 🔌 **Plugin Management** - Per-instance plugin configuration and control
 - 📋 **Logging** - Comprehensive logging for all activities
 - 🔧 **Modular Structure** - Clean, maintainable, and scalable code structure
+
+## Use Cases
+
+Whisper API is designed to help developers integrate WhatsApp messaging into their systems without directly managing WhatsApp Web sessions.
+
+Common use cases include:
+
+- WhatsApp notification systems
+- Customer support automation
+- CRM integrations
+- AI agents and chat automation
+- SaaS messaging gateways
+- Internal automation tools
 
 ## Installation
 
@@ -439,6 +456,19 @@ const sendMessage = async () => {
 - CORS errors: Configure CORS settings if accessing from browser applications
 - Authentication errors: Ensure proper headers and request format as per API documentation
 - Webhook testing: Use tools like ngrok for local webhook testing with public HTTPS URLs
+
+## Use Cases
+
+Whisper API is designed to help developers integrate WhatsApp messaging into their systems without directly managing WhatsApp Web sessions.
+
+Common use cases include:
+
+- WhatsApp notification systems
+- Customer support automation
+- CRM integrations
+- AI agents and chat automation
+- SaaS messaging gateways
+- Internal automation tools
 
 ## Contributing
 
