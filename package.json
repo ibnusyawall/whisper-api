@@ -26,28 +26,28 @@
   "license": "MIT",
   "dependencies": {
     "@prisma/client": "^7.9.1",
-    "axios": "^1.10.0",
+    "axios": "^1.19.0",
     "baileys": "^7.0.0-rc14",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.0",
-    "express": "^5.1.0",
-    "express-validator": "^7.2.1",
-    "helmet": "^8.1.0",
-    "highlight.js": "^11.11.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-validator": "^7.3.2",
+    "helmet": "^8.3.0",
+    "highlight.js": "^11.11.2",
     "js-yaml": "^5.2.3",
     "marked": "^18.0.9",
-    "morgan": "^1.10.0",
-    "postman-to-openapi": "^1.7.3",
+    "morgan": "^1.11.0",
+    "postman-to-openapi": "^3.0.1",
     "prisma": "^7.9.1",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "swagger-ui-express": "^5.0.1",
-    "winston": "^3.17.0"
+    "winston": "^3.19.0"
   },
   "devDependencies": {
     "@babel/core": "^8.0.1",
     "@babel/preset-env": "^8.0.2",
-    "jest": "^30.0.4"
+    "jest": "^30.4.2"
   },
   "engines": {
     "node": ">=20.19.0"
