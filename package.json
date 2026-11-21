@@ -26,7 +26,7 @@
   "author": "ibnusyawall",
   "license": "MIT",
   "dependencies": {
-    "@prisma/client": "^7.9.1",
+    "@prisma/client": "6.19.3",
     "axios": "^1.19.0",
     "baileys": "7.0.0-rc14",
     "cors": "^2.8.6",
@@ -39,7 +39,7 @@
     "marked": "^18.0.9",
     "morgan": "^1.11.0",
     "postman-to-openapi": "^3.0.1",
-    "prisma": "^7.9.1",
+    "prisma": "6.19.3",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "swagger-ui-express": "^5.0.1",
