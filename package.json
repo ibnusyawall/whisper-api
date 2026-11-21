@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
+    "postinstall": "node scripts/patch-baileys-status-ack.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -27,7 +28,7 @@
   "dependencies": {
     "@prisma/client": "^7.9.1",
     "axios": "^1.19.0",
-    "baileys": "^7.0.0-rc14",
+    "baileys": "7.0.0-rc14",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
