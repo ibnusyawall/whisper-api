@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const packageJson = require('../../package.json');
 const PluginManager = require('../core/plugin-manager.core');
+const { getWhatsAppProxyConfig } = require('../config/whatsapp-proxy.config');
 const instanceService = require('./instanceService');
 const messageService = require('./messageService');
 const webhookService = require('./webhookService');
@@ -49,13 +50,15 @@ class WhatsAppInstance {
             await this.pluginManager.loadPlugins();
 
             const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
-            const { version, isLatest } = await fetchLatestBaileysVersion();
+            const proxy = getWhatsAppProxyConfig();
+            const { version, isLatest } = await fetchLatestBaileysVersion(proxy.versionOptions);
 
             logger.info(`📱 Using WA version ${version.join('.')}, isLatest: ${isLatest} for ${this.instanceData.phone}`);
 
             this.sock = makeWASocket({
                 version,
                 auth: state,
+                ...proxy.socketOptions,
                 printQRInTerminal: false,
                 logger: {
                     level: 'error',

@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const path = require('path');
 const packageJson = require('../../package.json');
 const PluginManager = require('../core/plugin-manager.core');
+const { getWhatsAppProxyConfig } = require('../config/whatsapp-proxy.config');
 require('dotenv').config();
 
 class WhatsAppService {
@@ -36,13 +37,15 @@ class WhatsAppService {
             await this.pluginManager.loadPlugins();
 
             const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
-            const { version, isLatest } = await fetchLatestBaileysVersion();
+            const proxy = getWhatsAppProxyConfig();
+            const { version, isLatest } = await fetchLatestBaileysVersion(proxy.versionOptions);
 
             logger.info(`📱 Using WA version ${version.join('.')}, isLatest: ${isLatest}`);
 
             this.sock = makeWASocket({
                 version,
                 auth: state,
+                ...proxy.socketOptions,
                 printQRInTerminal: false,
                 logger: logger,
                 cachedGroupMetadata: async (jid) => {
