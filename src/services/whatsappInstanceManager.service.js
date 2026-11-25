@@ -12,6 +12,7 @@ const fs = require('fs');
 const packageJson = require('../../package.json');
 const PluginManager = require('../core/plugin-manager.core');
 const { getWhatsAppProxyConfig } = require('../config/whatsapp-proxy.config');
+const ConnectionRecovery = require('../core/connection-recovery.core');
 const instanceService = require('./instanceService');
 const messageService = require('./messageService');
 const webhookService = require('./webhookService');
@@ -29,12 +30,27 @@ class WhatsAppInstance {
         this.authDir = path.join(__dirname, `../../auth/${instanceData.phone}`);
         this.pluginManager = new PluginManager(instanceData);
         this.groupMetadataCache = new Map();
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.recovery = new ConnectionRecovery(
+            () => this.initialize(),
+            error => logger.error(`Reconnect failed for ${this.instanceData.phone}: ${error.message}`)
+        );
+        this.initializing = null;
         this.isManualRestart = false; // Flag to prevent auto-reconnect during manual restart
     }
 
     async initialize() {
+        if (this.initializing) return this.initializing;
+        const pending = this.initializeSocket();
+        this.initializing = pending;
+        try {
+            return await pending;
+        } finally {
+            if (this.initializing === pending) this.initializing = null;
+        }
+    }
+
+    async initializeSocket() {
+        const previousSocket = this.sock;
         try {
             logger.info(`🔄 Initializing WhatsApp instance for ${this.instanceData.phone}...`);
 
@@ -116,150 +132,144 @@ class WhatsAppInstance {
             });
 
         } catch (error) {
-            logger.error(`❌ Error initializing WhatsApp instance ${this.instanceData.phone}:`, error);
-            await instanceLogService.create({
-                instanceId: this.instanceData.id,
-                level: 'error',
-                message: `Error initializing WhatsApp instance: ${error.message}`
-            });
+            logger.error(`❌ Error initializing WhatsApp instance ${this.instanceData.phone}: ${error.message}`);
             this.connectionStatus = 'error';
-            await instanceService.updateStatus(this.instanceData.id, 'error');
+            try {
+                await instanceLogService.create({
+                    instanceId: this.instanceData.id,
+                    level: 'error',
+                    message: `Error initializing WhatsApp instance: ${error.message}`
+                });
+                await instanceService.updateStatus(this.instanceData.id, 'reconnecting');
+            } catch (statusError) {
+                logger.error(`Could not persist connection error for ${this.instanceData.phone}: ${statusError.message}`);
+            }
+
+            if (this.sock === previousSocket) {
+                this.recovery.schedule();
+            }
         }
     }
 
     setupEventHandlers(saveCreds) {
-        this.sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update;
+        const socket = this.sock;
+        socket.ev.on('connection.update', async (update) => {
+            if (socket !== this.sock || this.recovery.stopped) return;
+            try {
+                const { connection, lastDisconnect, qr } = update;
 
-            if (qr) {
-                this.qrCode = qr;
-                logger.info(`📱 QR Code generated for ${this.instanceData.phone}. Scan to connect.`);
-                if (process.env.NODE_ENV === 'development') {
-                    qrcodeTerminal.generate(qr, { small: true });
-                }
-                this.connectionStatus = 'qr_ready';
-                await instanceService.updateStatus(this.instanceData.id, 'qr_ready');
-                
-                const qrCodeImage = await qrcode.toDataURL(qr);
-                // Trigger webhook for QR code generation
-                await this.triggerWebhooks('connection.update', {
-                    status: 'qr_ready',
-                    qrCode: qr,
-                    qrCodeImage: qrCodeImage, 
-                    instance: this.instanceData,
-                    timestamp: new Date().toISOString(),
-                    message: 'QR Code generated. Scan to connect.'
-                });
-            }
-
-            if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                const disconnectReason = lastDisconnect?.error?.output?.statusCode;
-                const errorMessage = lastDisconnect?.error?.message;
-                
-                logger.info(`🔌 Connection closed for ${this.instanceData.phone}. Reason: ${disconnectReason}, Error: ${errorMessage}`);
-
-                // Check if this is a real manual restart or just a stream error
-                // Stream errors (code 515) during QR scanning should not be treated as manual restart
-                const isStreamError = disconnectReason === 515;
-                const wasManualRestart = this.isManualRestart && !isStreamError;
-                
-                // Reset manual restart flag after connection close
-                this.isManualRestart = false;
-
-                // Don't auto-reconnect if this was a manual restart or if we're logged out
-                if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts && !wasManualRestart) {
-                    this.reconnectAttempts++;
-                    logger.info(`🔄 Connection lost for ${this.instanceData.phone}, reconnecting... (attempt ${this.reconnectAttempts})`);
-                    this.connectionStatus = 'reconnecting';
-                    this.isConnected = false;
-                    await instanceService.updateStatus(this.instanceData.id, 'reconnecting');
-                    
-                    // Trigger webhook for reconnecting state
-                    await this.triggerWebhooks('connection.update', {
-                        status: 'reconnecting',
-                        instance: this.instanceData,
-                        timestamp: new Date().toISOString(),
-                        reconnectAttempt: this.reconnectAttempts,
-                        maxReconnectAttempts: this.maxReconnectAttempts,
-                        message: `Connection lost. Reconnecting... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
-                        disconnectReason: disconnectReason,
-                        errorMessage: errorMessage
-                    });
-                    
-                    setTimeout(() => this.initialize(), 5000);
-                } else {
-                    if (wasManualRestart) {
-                        logger.info(`🔄 Connection closed for ${this.instanceData.phone} due to manual restart - not cleaning up`);
-                        // Don't clean up if it was a manual restart, just update status
-                        this.connectionStatus = 'disconnected';
-                        this.isConnected = false;
-                        await instanceService.updateStatus(this.instanceData.id, 'inactive');
-                    } else {
-                        logger.info(`🔓 Connection closed for ${this.instanceData.phone}, logged out or max reconnect attempts reached`);
-                        
-                        // Use the instance manager to handle logout and cleanup while keeping database records
-                        const instanceManager = require('./whatsappInstanceManager.service');
-                        try {
-                            await instanceManager.deleteInstance(this.instanceData.phone, true); // keepDatabaseRecord = true
-                            logger.info(`🗑️ Instance ${this.instanceData.phone} cleaned up, database record preserved`);
-                        } catch (cleanupError) {
-                            logger.error(`Error during logout cleanup for ${this.instanceData.phone}: ${cleanupError.message}`);
-                            // Fallback to manual cleanup
-                            await instanceService.updateStatus(this.instanceData.id, 'inactive');
-                        }
-                        
-                        this.connectionStatus = 'logged_out';
-                        this.isConnected = false;
+                if (qr) {
+                    this.qrCode = qr;
+                    logger.info(`📱 QR Code generated for ${this.instanceData.phone}. Scan to connect.`);
+                    if (process.env.NODE_ENV === 'development') {
+                        qrcodeTerminal.generate(qr, { small: true });
                     }
+                    this.connectionStatus = 'qr_ready';
+                    await instanceService.updateStatus(this.instanceData.id, 'qr_ready');
                     
-                    // Trigger webhook for connection close
+                    const qrCodeImage = await qrcode.toDataURL(qr);
+                    // Trigger webhook for QR code generation
                     await this.triggerWebhooks('connection.update', {
-                        status: wasManualRestart ? 'manual_restart' : 'logged_out',
+                        status: 'qr_ready',
+                        qrCode: qr,
+                        qrCodeImage: qrCodeImage, 
                         instance: this.instanceData,
                         timestamp: new Date().toISOString(),
-                        message: wasManualRestart ? 'Connection closed due to manual restart' : 'Logged out or max reconnect attempts reached - auth folder cleaned, restart instance for new QR',
-                        disconnectReason: disconnectReason,
-                        errorMessage: errorMessage,
-                        wasManualRestart: wasManualRestart,
-                        authFolderCleaned: !wasManualRestart
+                        message: 'QR Code generated. Scan to connect.'
                     });
                 }
-            } else if (connection === 'open') {
-                logger.info(`✅ WhatsApp connection established for ${this.instanceData.phone}`);
-                this.connectionStatus = 'connected';
-                this.isConnected = true;
-                this.qrCode = null;
-                this.reconnectAttempts = 0;
-                await instanceService.updateStatus(this.instanceData.id, 'active');
-                
-                // Trigger webhook for successful connection
-                await this.triggerWebhooks('connection.update', {
-                    status: 'connected',
-                    instance: this.instanceData,
-                    timestamp: new Date().toISOString(),
-                    message: 'WhatsApp connection established successfully',
-                    previousReconnectAttempts: this.reconnectAttempts
-                });
-            } else if (connection === 'connecting') {
-                logger.info(`🔄 Connecting to WhatsApp for ${this.instanceData.phone}...`);
-                this.connectionStatus = 'connecting';
-                await instanceService.updateStatus(this.instanceData.id, 'connecting');
-                
-                // Trigger webhook for connecting state
-                await this.triggerWebhooks('connection.update', {
-                    status: 'connecting',
-                    instance: this.instanceData,
-                    timestamp: new Date().toISOString(),
-                    message: 'Attempting to connect to WhatsApp...'
-                });
-            }
 
-            await instanceLogService.create({
-                instanceId: this.instanceData.id,
-                level: 'info',
-                message: `Connection status changed: ${connection}`
-            });
+                if (connection === 'close') {
+                    const disconnectReason = lastDisconnect?.error?.output?.statusCode;
+                    const errorMessage = lastDisconnect?.error?.message;
+                    const wasManualRestart = this.isManualRestart && disconnectReason !== 515;
+
+                    this.isManualRestart = false;
+                    this.isConnected = false;
+                    this.recovery.markDisconnected();
+                    logger.info(`🔌 Connection closed for ${this.instanceData.phone}. Reason: ${disconnectReason}, Error: ${errorMessage}`);
+
+                    if (wasManualRestart) {
+                        this.recovery.cancelRetry();
+                        this.connectionStatus = 'disconnected';
+                        await instanceService.updateStatus(this.instanceData.id, 'inactive');
+                        await this.triggerWebhooks('connection.update', {
+                            status: 'manual_restart',
+                            instance: this.instanceData,
+                            timestamp: new Date().toISOString(),
+                            message: 'Connection closed for manual restart; auth preserved',
+                            disconnectReason,
+                            errorMessage,
+                            authFolderCleaned: false
+                        });
+                    } else if (disconnectReason === DisconnectReason.loggedOut) {
+                        // Server-reported logout requires user intervention; never delete auth automatically.
+                        this.recovery.stop();
+                        this.connectionStatus = 'logged_out';
+                        await instanceService.updateStatus(this.instanceData.id, 'logged_out');
+                        await this.triggerWebhooks('connection.update', {
+                            status: 'logged_out',
+                            instance: this.instanceData,
+                            timestamp: new Date().toISOString(),
+                            message: 'WhatsApp reported logout; auth retained for manual inspection',
+                            disconnectReason,
+                            errorMessage,
+                            authFolderCleaned: false
+                        });
+                    } else {
+                        this.connectionStatus = 'reconnecting';
+                        const retry = this.recovery.schedule();
+                        logger.info(`🔄 Reconnecting ${this.instanceData.phone} after ${retry?.delay ?? 'scheduled'} ms (attempt ${this.recovery.attempts})`);
+                        await instanceService.updateStatus(this.instanceData.id, 'reconnecting');
+                        await this.triggerWebhooks('connection.update', {
+                            status: 'reconnecting',
+                            instance: this.instanceData,
+                            timestamp: new Date().toISOString(),
+                            reconnectAttempt: this.recovery.attempts,
+                            message: 'Connection lost; retry scheduled while retaining auth',
+                            disconnectReason,
+                            errorMessage
+                        });
+                    }
+                } else if (connection === 'open') {
+                    logger.info(`✅ WhatsApp connection established for ${this.instanceData.phone}`);
+                    this.connectionStatus = 'connected';
+                    this.isConnected = true;
+                    this.qrCode = null;
+                    const previousReconnectAttempts = this.recovery.attempts;
+                    this.recovery.markConnected();
+                    await instanceService.updateStatus(this.instanceData.id, 'active');
+                    
+                    // Trigger webhook for successful connection
+                    await this.triggerWebhooks('connection.update', {
+                        status: 'connected',
+                        instance: this.instanceData,
+                        timestamp: new Date().toISOString(),
+                        message: 'WhatsApp connection established successfully',
+                        previousReconnectAttempts
+                    });
+                } else if (connection === 'connecting') {
+                    logger.info(`🔄 Connecting to WhatsApp for ${this.instanceData.phone}...`);
+                    this.connectionStatus = 'connecting';
+                    await instanceService.updateStatus(this.instanceData.id, 'connecting');
+                    
+                    // Trigger webhook for connecting state
+                    await this.triggerWebhooks('connection.update', {
+                        status: 'connecting',
+                        instance: this.instanceData,
+                        timestamp: new Date().toISOString(),
+                        message: 'Attempting to connect to WhatsApp...'
+                    });
+                }
+
+                await instanceLogService.create({
+                    instanceId: this.instanceData.id,
+                    level: 'info',
+                    message: `Connection status changed: ${connection}`
+                });
+            } catch (error) {
+                logger.error(`Connection event handler failed for ${this.instanceData.phone}: ${error.message}`);
+            }
         });
 
         this.sock.ev.on('creds.update', saveCreds);
@@ -801,6 +811,8 @@ class WhatsAppInstance {
     }
 
     async close() {
+        this.recovery.cancelRetry();
+        this.recovery.markDisconnected();
         // Close connection without logging out (for restart)
         if (this.sock && this.sock.ws) {
             try {
@@ -817,6 +829,7 @@ class WhatsAppInstance {
     }
 
     async disconnect() {
+        this.recovery.stop();
         if (this.sock) {
             try {
                 await this.sock.logout();
@@ -842,7 +855,7 @@ class WhatsAppInstance {
             connectionStatus: this.connectionStatus,
             qrCode: this.qrCode,
             qrCodeImage: qrCodeImage,
-            reconnectAttempts: this.reconnectAttempts,
+            reconnectAttempts: this.recovery.attempts,
             timestamp: new Date().toISOString()
         };
     }
@@ -866,7 +879,7 @@ class WhatsAppInstanceManager {
                 this.instances.set(instanceData.phone, instance);
                 
                 // Initialize instance if it was active before
-                if (instanceData.status === 'active' || instanceData.status === 'connecting') {
+                if (['active', 'connecting', 'reconnecting', 'error'].includes(instanceData.status)) {
                     await instance.initialize();
                 }
             }
@@ -998,7 +1011,9 @@ class WhatsAppInstanceManager {
             throw new Error(`WhatsApp instance ${phone} not found`);
         }
 
-        // Set manual restart flag to prevent auto-reconnection
+        // Manual restart preserves the existing credentials.
+        instance.recovery.resume();
+        instance.recovery.cancelRetry();
         instance.isManualRestart = true;
         
         // Close connection without logging out (to preserve auth)
@@ -1006,7 +1021,8 @@ class WhatsAppInstanceManager {
         
         // Wait a moment for clean disconnection
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+        instance.isManualRestart = false;
+
         // Initialize the instance again
         await instance.initialize();
         
